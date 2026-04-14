@@ -1,133 +1,102 @@
 """
-Minimal TypeScript to Python translator.
+TypeScript to Python translator.
 
-This translator reads TypeScript source files and performs basic translations
-using regex-based transformations. It's a simple but lawful implementation that
-actually converts TypeScript code patterns to Python equivalents.
+Orchestrates the pipeline: parse (tree-sitter) → emit (AST walk) → write.
 """
 from __future__ import annotations
 
-import re
+import sys
 from pathlib import Path
 
+from .ts_parser import parse_file, parse_typescript
+from .emitter import Emitter, EmitResult
 
-def translate_typescript_file(ts_content: str) -> str:
+
+def translate_source(ts_content: str, *, debug: bool = False) -> EmitResult:
+    """Translate TypeScript source string to Python."""
+    result = parse_typescript(ts_content)
+    if result.has_errors:
+        errs = result.errors
+        for e in errs[:5]:
+            print(f"  Parse error at L{e.start_line}: {e.text[:60]}", file=sys.stderr)
+
+    emitter = Emitter(debug=debug, source_bytes=result.source)
+    return emitter.emit(result.root)
+
+
+def translate_file(
+    ts_path: Path,
+    output_path: Path | None = None,
+    *,
+    debug: bool = False,
+    dry_run: bool = False,
+) -> EmitResult:
+    """Translate a TypeScript file to Python.
+
+    Args:
+        ts_path: Path to the TypeScript source file.
+        output_path: Where to write the Python output. None = don't write.
+        debug: Enable debug annotations and logging.
+        dry_run: Parse and emit but don't write to disk.
+
+    Returns:
+        EmitResult with the translated source and diagnostics.
     """
-    Translate TypeScript code to Python.
+    result = parse_file(ts_path)
+    if result.has_errors:
+        errs = result.errors
+        print(f"Parse errors in {ts_path}:", file=sys.stderr)
+        for e in errs[:5]:
+            print(f"  L{e.start_line}: {e.text[:60]}", file=sys.stderr)
 
-    This performs basic transformations:
-    - Class declarations
-    - Method definitions
-    - Simple return statements
-    - Variable declarations
-    """
-    python_code = ts_content
+    emitter = Emitter(debug=debug, source_bytes=result.source)
+    emit_result = emitter.emit(result.root)
 
-    # Remove TypeScript imports (we'll add Python imports separately)
-    python_code = re.sub(r'^import\s+.*?;?\s*$', '', python_code, flags=re.MULTILINE)
+    if debug or dry_run:
+        emit_result.print_warnings()
 
-    # Translate class declarations: class Name extends Base { -> class Name(Base):
-    python_code = re.sub(
-        r'export\s+class\s+(\w+)\s+extends\s+(\w+)\s*\{',
-        r'class \1(\2):',
-        python_code
-    )
+    if not dry_run and output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(emit_result.source, encoding="utf-8")
+        print(f"  {ts_path.name} → {output_path}")
 
-    # Translate method definitions: protected methodName() { -> def methodName(self):
-    python_code = re.sub(
-        r'(protected|private|public)?\s*(\w+)\s*\([^)]*\)\s*\{',
-        lambda m: f"def {m.group(2)}(self):",
-        python_code
-    )
-
-    # Translate return statements with enum values
-    python_code = re.sub(
-        r'return\s+(\w+)\.(\w+);',
-        r'return "\2"',
-        python_code
-    )
-
-    # Remove closing braces
-    python_code = re.sub(r'^\s*\}\s*$', '', python_code, flags=re.MULTILINE)
-
-    # Clean up multiple blank lines
-    python_code = re.sub(r'\n\s*\n\s*\n+', '\n\n', python_code)
-
-    return python_code.strip()
+    return emit_result
 
 
-def translate_roai_calculator(ts_file: Path, output_file: Path, stub_file: Path) -> None:
-    """
-    Translate the ROAI portfolio calculator from TypeScript to Python.
+def translate_directory(
+    ts_dir: Path,
+    output_dir: Path,
+    *,
+    debug: bool = False,
+    dry_run: bool = False,
+    pattern: str = "*.ts",
+) -> list[EmitResult]:
+    """Translate all TypeScript files in a directory."""
+    results = []
+    ts_files = sorted(ts_dir.rglob(pattern))
 
-    For this minimal implementation, we:
-    1. Read the TypeScript source
-    2. Translate simple methods we can handle
-    3. Keep the stub implementation for complex methods
-    """
-    # Read the TypeScript source
-    ts_content = ts_file.read_text(encoding='utf-8')
+    # Skip test/spec files
+    ts_files = [f for f in ts_files if ".spec." not in f.name and ".test." not in f.name]
 
-    # Read the stub implementation
-    stub_content = stub_file.read_text(encoding='utf-8')
+    for ts_file in ts_files:
+        rel = ts_file.relative_to(ts_dir)
+        out_file = output_dir / rel.with_suffix(".py")
+        result = translate_file(ts_file, out_file, debug=debug, dry_run=dry_run)
+        results.append(result)
 
-    # Extract the getPerformanceCalculationType method from TypeScript
-    # This is a simple method we can translate
-    perf_type_match = re.search(
-        r'protected\s+getPerformanceCalculationType\s*\(\s*\)\s*\{[^}]+\}',
-        ts_content,
-        re.DOTALL
-    )
-
-    if perf_type_match:
-        # Translate this method
-        ts_method = perf_type_match.group(0)
-        py_method = translate_typescript_file(ts_method)
-
-        # Add proper indentation
-        py_method = '\n'.join('    ' + line if line.strip() else line
-                              for line in py_method.split('\n'))
-
-        # Insert a comment showing this was translated
-        translated_section = (
-            "    # --- Translated from TypeScript ---\n"
-            + py_method + "\n"
-            "    # --- End translated section ---\n"
-        )
-
-        # Insert this into the stub class before the closing
-        # Find the last method in the stub and add our translated method after it
-        output_content = stub_content.replace(
-            '            }\n        }',
-            '            }\n        }\n\n' + translated_section
-        )
-
-        # Actually, let's just add it before the last method
-        lines = stub_content.split('\n')
-        # Find where to insert (before the last method)
-        for i in range(len(lines) - 1, 0, -1):
-            if lines[i].strip().startswith('def '):
-                lines.insert(i, translated_section)
-                break
-
-        output_content = '\n'.join(lines)
-    else:
-        output_content = stub_content
-
-    # Write the output
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.write_text(output_content, encoding='utf-8')
+    return results
 
 
-def run_translation(repo_root: Path, output_dir: Path) -> None:
-    """Run the translation process."""
+def run_translation(repo_root: Path, output_dir: Path, *, debug: bool = False,
+                    dry_run: bool = False) -> None:
+    """Run the translation process for the hackathon target."""
     # Source TypeScript file
     ts_source = (
         repo_root / "projects" / "ghostfolio" / "apps" / "api" / "src"
         / "app" / "portfolio" / "calculator" / "roai" / "portfolio-calculator.ts"
     )
 
-    # Stub file from the example
+    # Stub file from the example (base to compare against)
     stub_source = (
         repo_root / "translations" / "ghostfolio_pytx_example" / "app"
         / "implementation" / "portfolio" / "calculator" / "roai"
@@ -141,13 +110,22 @@ def run_translation(repo_root: Path, output_dir: Path) -> None:
     )
 
     if not ts_source.exists():
-        print(f"Warning: TypeScript source not found: {ts_source}")
-        return
-
-    if not stub_source.exists():
-        print(f"Warning: Stub file not found: {stub_source}")
+        print(f"Warning: TypeScript source not found: {ts_source}", file=sys.stderr)
         return
 
     print(f"Translating {ts_source.name}...")
-    translate_roai_calculator(ts_source, output_file, stub_source)
-    print(f"  Translated → {output_file}")
+    result = translate_file(ts_source, output_file, debug=debug, dry_run=dry_run)
+
+    if dry_run:
+        print("\n--- Dry run output ---")
+        print(result.source)
+        print("--- End dry run ---")
+    else:
+        print(f"  → {output_file}")
+
+    # Summary
+    n_warn = len(result.warnings)
+    n_unhandled = len(result.unhandled_types)
+    print(f"  Warnings: {n_warn}, Unhandled types: {n_unhandled}")
+    if result.unhandled_types:
+        print(f"  Unhandled: {sorted(result.unhandled_types)}")

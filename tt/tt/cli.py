@@ -22,25 +22,29 @@ EXAMPLE_DIR = REPO_ROOT / "translations" / "ghostfolio_pytx_example"
 
 def cmd_translate(args: argparse.Namespace) -> int:
     output_dir = Path(args.output) if args.output else TRANSLATION_DIR
+    debug = args.debug
+    dry_run = args.dry_run
 
-    # Step 1: Set up the scaffold (copies example + support modules)
-    setup_script = REPO_ROOT / "helptools" / "setup_ghostfolio_scaffold_for_tt.py"
-    if not setup_script.exists():
-        print(f"ERROR: setup script not found: {setup_script}", file=sys.stderr)
-        return 1
+    if not dry_run:
+        # Step 1: Set up the scaffold (copies example + support modules)
+        setup_script = REPO_ROOT / "helptools" / "setup_ghostfolio_scaffold_for_tt.py"
+        if not setup_script.exists():
+            print(f"ERROR: setup script not found: {setup_script}", file=sys.stderr)
+            return 1
 
-    print(f"Setting up scaffold → {output_dir}")
-    subprocess.run(
-        [sys.executable, str(setup_script), "--output", str(output_dir)],
-        check=True,
-    )
+        print(f"Setting up scaffold → {output_dir}")
+        subprocess.run(
+            [sys.executable, str(setup_script), "--output", str(output_dir)],
+            check=True,
+        )
 
     # Step 2: Run the actual translation
     print(f"\nTranslating TypeScript to Python...")
     from tt.translator import run_translation
-    run_translation(REPO_ROOT, output_dir)
+    run_translation(REPO_ROOT, output_dir, debug=debug, dry_run=dry_run)
 
-    print(f"\nDone. Output at {output_dir}")
+    if not dry_run:
+        print(f"\nDone. Output at {output_dir}")
     return 0
 
 
@@ -99,6 +103,10 @@ def main() -> int:
 
     p_translate = sub.add_parser("translate", help="Translate TypeScript to Python")
     p_translate.add_argument("-o", "--output", help="Output directory")
+    p_translate.add_argument("--debug", action="store_true",
+                             help="Enable debug annotations and emit logging")
+    p_translate.add_argument("--dry-run", action="store_true",
+                             help="Parse and emit without writing files")
 
     p_parse = sub.add_parser("parse", help="Parse and inspect a TypeScript file")
     p_parse.add_argument("file", help="Path to TypeScript file")
