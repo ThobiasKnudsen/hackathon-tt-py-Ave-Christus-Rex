@@ -46,58 +46,23 @@ def _grade(score: float) -> str:
 
 
 def _run_pyscn(path: Path) -> dict:
-    """Run pyscn analyze on *path* and return the parsed summary dict.
-
-    On Windows where Smart App Control blocks the pyscn binary, set the
-    env var ``PYSCN_USE_DOCKER=1`` to run pyscn inside a python:3.12-slim
-    container instead.
-    """
-    import os
+    """Run pyscn analyze on *path* and return the parsed summary dict."""
     if not path.exists():
         return {"error": f"path does not exist: {path}", "health_score": 0, "grade": "F"}
 
-    # Auto-use Docker on Windows because Smart App Control blocks the pyscn
-    # binary that uvx pulls in. Override with PYSCN_USE_DOCKER=0 to force uvx.
-    use_docker = os.environ.get("PYSCN_USE_DOCKER")
-    if use_docker is None:
-        use_docker = "1" if sys.platform == "win32" else "0"
-    if use_docker == "1":
-        repo = str(REPO_ROOT).replace("\\", "/")
-        # Path inside the container, relative to /repo
-        rel = str(path.resolve().relative_to(REPO_ROOT)).replace("\\", "/")
-        cmd = [
-            "docker", "run", "--rm",
-            "-v", f"{repo}:/repo",
-            "-w", "/repo",
-            "-e", "MSYS_NO_PATHCONV=1",
-            "python:3.12-slim",
-            "bash", "-c",
-            f"pip install -q pyscn && pyscn analyze /repo/{rel} --json",
-        ]
-        env = os.environ.copy()
-        env["MSYS_NO_PATHCONV"] = "1"
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env,
-                                encoding="utf-8", errors="replace")
-        # pyscn writes the JSON path to stdout/stderr; report ends up on host filesystem
-        haystack = (result.stdout or "") + "\n" + (result.stderr or "")
-        match = re.search(r"Unified JSON report generated:\s*(.+\.json)", haystack)
-    else:
-        result = subprocess.run(
-            ["uvx", "pyscn@latest", "analyze", str(path), "--json"],
-            capture_output=True,
-            text=True,
-            cwd=REPO_ROOT,
-        )
-        match = re.search(r"Unified JSON report generated:\s*(.+\.json)", result.stderr)
+    result = subprocess.run(
+        ["uvx", "pyscn@latest", "analyze", str(path), "--json"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
 
+    # pyscn prints the JSON report path in stdout
+    match = re.search(r"Unified JSON report generated:\s*(.+\.json)", result.stderr)
     if not match:
         return {"error": "pyscn did not emit a JSON report path", "health_score": 0, "grade": "F"}
 
-    raw = match.group(1).strip()
-    # When pyscn ran in the container the path is rooted at /repo; map it back.
-    if use_docker == "1" and raw.startswith("/repo/"):
-        raw = str(REPO_ROOT / raw[len("/repo/"):])
-    report_path = Path(raw)
+    report_path = Path(match.group(1).strip())
     if not report_path.exists():
         return {"error": f"report file not found: {report_path}", "health_score": 0, "grade": "F"}
 
