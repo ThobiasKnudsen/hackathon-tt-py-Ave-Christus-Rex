@@ -1,0 +1,19 @@
+{
+  "checks": {
+    "LLM usage in tt/": "OK",
+    "Direct mappings in tt/": "OK",
+    "Explicit implementation": "OK",
+    "Financial logic in scaffold": "OK",
+    "Scaffold bloat": "OK",
+    "Code block copying": "OK",
+    "Interface compliance": "OK",
+    "Wrapper modification": "OK",
+    "Evaluate folder unchanged": "OK",
+    "Template file bypass": "OK",
+    "Premade calculator": "OK",
+    "String-literal smuggling": "OK",
+    "Explicit implementation LLM review": "SKIPPED"
+  },
+  "legal": true,
+  "failures": 0
+}

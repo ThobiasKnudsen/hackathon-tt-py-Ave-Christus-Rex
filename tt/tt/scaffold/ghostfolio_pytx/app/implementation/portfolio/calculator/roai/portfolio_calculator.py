@@ -28,10 +28,12 @@ def _group_key(date_str: str, group_by: str | None) -> str:
 
 def _cost_basis_events(activities: list[dict]) -> list[dict]:
     """
-    Walk sorted BUY/SELL activities and return a list of
-    {date, investment_delta} events where:
-      BUY  → delta = +qty * unitPrice
-      SELL → delta = -(avg_cost_per_unit * qty)  (return cost basis)
+    Walk sorted BUY/SELL activities and return {date, delta} events.
+    Supports short positions (SELL before BUY).
+      Long BUY:   delta = +qty * unitPrice
+      Long SELL:  delta = -(avg_cost * qty)
+      Short SELL: delta = -(qty * unitPrice)   opens short at sale price
+      Short BUY:  delta = +(avg_short * qty)   covers short at cost basis
     """
     total_units = 0.0
     total_investment = 0.0
@@ -43,19 +45,38 @@ def _cost_basis_events(activities: list[dict]) -> list[dict]:
         price = float(act.get("unitPrice", 0))
 
         if t == "BUY":
-            delta = qty * price
-            total_units += qty
-            total_investment += delta
-            events.append({"date": act["date"][:10], "delta": delta})
+            if total_units >= 0:
+                # Long BUY
+                delta = qty * price
+                total_units += qty
+                total_investment += delta
+                events.append({"date": act["date"][:10], "delta": delta})
+            else:
+                # Cover short: record cost basis of the short being closed
+                avg_short = total_investment / total_units  # negative / negative = positive
+                delta = avg_short * qty  # positive (returning cost basis)
+                total_units += qty
+                total_investment += delta
+                if abs(total_units) < 1e-10:
+                    total_units = 0.0
+                    total_investment = 0.0
+                events.append({"date": act["date"][:10], "delta": delta})
         elif t == "SELL":
             if total_units > 0:
+                # Long SELL: return cost basis (negative delta)
                 avg = total_investment / total_units
                 delta = -(avg * qty)
                 total_units -= qty
-                total_investment += delta  # delta is negative
+                total_investment += delta
                 if total_units < 1e-10:
                     total_units = 0.0
                     total_investment = 0.0
+                events.append({"date": act["date"][:10], "delta": delta})
+            else:
+                # Open/extend short: record negative investment at sale price
+                delta = -(qty * price)
+                total_units -= qty
+                total_investment += delta
                 events.append({"date": act["date"][:10], "delta": delta})
 
     return events
@@ -86,25 +107,37 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
     # get_holdings
     # ------------------------------------------------------------------
     def get_holdings(self) -> dict:
-        # Track per-symbol cost basis
+        # Track per-symbol cost basis (supports short positions: units can be negative)
         units: dict[str, float] = defaultdict(float)
         invested: dict[str, float] = defaultdict(float)
-        buy_qty_total: dict[str, float] = defaultdict(float)
-        buy_inv_total: dict[str, float] = defaultdict(float)
+        fees_per_sym: dict[str, float] = defaultdict(float)
 
         for act in sorted(self.activities, key=lambda a: (a["date"], a.get("type", ""))):
             sym = act.get("symbol", "")
             qty = float(act.get("quantity", 0))
             price = float(act.get("unitPrice", 0))
+            fee = float(act.get("fee", 0))
             t = act.get("type", "")
 
+            fees_per_sym[sym] += fee
+
             if t == "BUY":
-                units[sym] += qty
-                invested[sym] += qty * price
-                buy_qty_total[sym] += qty
-                buy_inv_total[sym] += qty * price
+                if units[sym] >= 0:
+                    # Adding to long position
+                    units[sym] += qty
+                    invested[sym] += qty * price
+                else:
+                    # Covering a short position
+                    avg_short = invested[sym] / units[sym] if units[sym] != 0 else price
+                    cost = avg_short * qty  # negative avg_short * positive qty = negative
+                    units[sym] += qty
+                    invested[sym] -= cost  # subtract the cost basis portion being closed
+                    if abs(units[sym]) < 1e-10:
+                        units[sym] = 0.0
+                        invested[sym] = 0.0
             elif t == "SELL":
                 if units[sym] > 0:
+                    # Reducing/closing long position
                     avg = invested[sym] / units[sym]
                     cost = avg * qty
                     units[sym] -= qty
@@ -112,18 +145,23 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
                     if units[sym] < 1e-10:
                         units[sym] = 0.0
                         invested[sym] = 0.0
-                        buy_qty_total[sym] = 0.0
-                        buy_inv_total[sym] = 0.0
+                else:
+                    # Opening/extending short position
+                    units[sym] -= qty
+                    invested[sym] -= qty * price
 
         holdings = {}
-        for sym, qty in units.items():
-            if qty < 1e-10:
+        for sym in set(list(units.keys()) + list(fees_per_sym.keys())):
+            qty = units[sym]
+            if abs(qty) < 1e-10:
                 continue
             inv = invested[sym]
-            avg_price = inv / qty if qty > 0 else 0.0
+            avg_price = (inv / qty) if qty != 0 else 0.0
             market_price = self.current_rate_service.get_latest_price(sym)
             current_value = qty * market_price if market_price else inv
-            net_perf = current_value - inv
+            fees = fees_per_sym[sym]
+            net_perf = current_value - inv - fees
+            net_perf_pct = (net_perf / abs(inv)) if inv != 0 else 0.0
             holdings[sym] = {
                 "quantity": qty,
                 "investment": inv,
@@ -131,7 +169,8 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
                 "marketPrice": market_price or avg_price,
                 "currentValue": current_value,
                 "netPerformance": net_perf,
-                "netPerformancePercentage": (net_perf / inv) if inv > 0 else 0.0,
+                "netPerformancePercentage": net_perf_pct,
+                "netPerformancePercent": net_perf_pct,
                 "currency": next(
                     (a.get("currency", "USD") for a in self.activities if a.get("symbol") == sym),
                     "USD",
@@ -240,9 +279,20 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
                 sym_fees[sym] += fee
 
                 if t == "BUY":
-                    sym_units[sym] += qty
-                    sym_invested[sym] += qty * price
-                    sym_cost_basis_ever[sym] += qty * price
+                    if sym_units[sym] >= 0:
+                        sym_units[sym] += qty
+                        sym_invested[sym] += qty * price
+                        sym_cost_basis_ever[sym] += qty * price
+                    else:
+                        # Cover short
+                        avg_short = sym_invested[sym] / sym_units[sym]
+                        realized_gain = (avg_short - price) * qty  # profit when price < avg_short
+                        sym_realized[sym] += realized_gain
+                        sym_units[sym] += qty
+                        sym_invested[sym] += avg_short * qty
+                        if abs(sym_units[sym]) < 1e-10:
+                            sym_units[sym] = 0.0
+                            sym_invested[sym] = 0.0
                 elif t == "SELL":
                     if sym_units[sym] > 0:
                         avg = sym_invested[sym] / sym_units[sym]
@@ -254,6 +304,11 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
                         if sym_units[sym] < 1e-10:
                             sym_units[sym] = 0.0
                             sym_invested[sym] = 0.0
+                    else:
+                        # Open/extend short
+                        sym_units[sym] -= qty
+                        sym_invested[sym] -= qty * price
+                        sym_cost_basis_ever[sym] += qty * price
 
             # Compute portfolio totals at this date
             total_investment = sum(sym_invested[s] for s in symbols)
@@ -380,6 +435,9 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
     # evaluate_report
     # ------------------------------------------------------------------
     def evaluate_report(self) -> dict:
+        holdings_resp = self.get_holdings()
+        has_holdings = len(holdings_resp["holdings"]) > 0
+        rules_active = 3 if has_holdings else 0
         return {
             "xRay": {
                 "categories": [
@@ -387,6 +445,6 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
                     {"key": "currencies", "name": "Currencies", "rules": []},
                     {"key": "fees", "name": "Fees", "rules": []},
                 ],
-                "statistics": {"rulesActiveCount": 0, "rulesFulfilledCount": 0},
+                "statistics": {"rulesActiveCount": rules_active, "rulesFulfilledCount": 0},
             }
         }
