@@ -297,6 +297,49 @@ def dump_node(node: Node, *, file=None) -> None:
     print(f"Text:\n{raw}", file=file)
 
 
+def _get_member_name(member: Node) -> str:
+    """Extract the property_identifier name from a class member node."""
+    for mc in member.children:
+        if mc.type == "property_identifier":
+            return node_text(mc)
+    return ""
+
+
+def _summarize_class(cls_node: Node, file) -> None:
+    """Print summary of a class declaration's members."""
+    name_node = cls_node.child_by_field_name("name")
+    name = node_text(name_node) if name_node else "?"
+    print(f"  export class {name}  [L{cls_node.start_point[0]+1}-{cls_node.end_point[0]+1}]", file=file)
+
+    body = cls_node.child_by_field_name("body")
+    if not body:
+        return
+    for member in body.children:
+        mname = _get_member_name(member)
+        if member.type == "method_definition":
+            lines = member.end_point[0] - member.start_point[0] + 1
+            print(f"    method {mname}()  [{lines} lines, L{member.start_point[0]+1}-{member.end_point[0]+1}]", file=file)
+        elif member.type == "public_field_definition":
+            print(f"    field {mname}  [L{member.start_point[0]+1}]", file=file)
+
+
+def _summarize_child(child: Node, file) -> None:
+    """Print summary line for a single top-level statement."""
+    if child.type == "import_statement":
+        src_node = child.child_by_field_name("source")
+        src = node_text(src_node) if src_node else "?"
+        print(f"  import from {src}  [L{child.start_point[0]+1}]", file=file)
+    elif child.type == "export_statement":
+        for ic in named_children(child):
+            if ic.type == "class_declaration":
+                _summarize_class(ic, file)
+            else:
+                print(f"  export {ic.type}  [L{ic.start_point[0]+1}]", file=file)
+    else:
+        preview = node_text(child)[:60].replace("\n", "\\n")
+        print(f"  {child.type}: {preview}  [L{child.start_point[0]+1}]", file=file)
+
+
 def summary(result: ParseResult, *, file=None) -> None:
     """Print a structural summary of a parsed file."""
     if file is None:
@@ -310,45 +353,9 @@ def summary(result: ParseResult, *, file=None) -> None:
         preview = err.text[:80].replace("\n", "\\n")
         print(f"  ERROR at line {err.start_line}: {preview}", file=file)
 
-    # Top-level children
     print(f"\nTop-level statements ({result.root.child_count} total):", file=file)
     for child in result.root.children:
-        if not child.is_named:
-            continue
-        if child.type == "import_statement":
-            src_node = child.child_by_field_name("source")
-            src = node_text(src_node) if src_node else "?"
-            print(f"  import from {src}  [L{child.start_point[0]+1}]", file=file)
-        elif child.type == "export_statement":
-            inner = named_children(child)
-            for ic in inner:
-                if ic.type == "class_declaration":
-                    name_node = ic.child_by_field_name("name")
-                    name = node_text(name_node) if name_node else "?"
-                    print(f"  export class {name}  [L{ic.start_point[0]+1}-{ic.end_point[0]+1}]", file=file)
-
-                    body = ic.child_by_field_name("body")
-                    if body:
-                        for member in body.children:
-                            if member.type == "method_definition":
-                                mname = ""
-                                for mc in member.children:
-                                    if mc.type == "property_identifier":
-                                        mname = node_text(mc)
-                                        break
-                                lines = member.end_point[0] - member.start_point[0] + 1
-                                print(f"    method {mname}()  [{lines} lines, L{member.start_point[0]+1}-{member.end_point[0]+1}]", file=file)
-                            elif member.type == "public_field_definition":
-                                fname = ""
-                                for mc in member.children:
-                                    if mc.type == "property_identifier":
-                                        fname = node_text(mc)
-                                        break
-                                print(f"    field {fname}  [L{member.start_point[0]+1}]", file=file)
-                else:
-                    print(f"  export {ic.type}  [L{ic.start_point[0]+1}]", file=file)
-        else:
-            preview = node_text(child)[:60].replace("\n", "\\n")
-            print(f"  {child.type}: {preview}  [L{child.start_point[0]+1}]", file=file)
+        if child.is_named:
+            _summarize_child(child, file)
 
     print("=" * 50, file=file)

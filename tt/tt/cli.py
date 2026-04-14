@@ -44,6 +44,33 @@ def cmd_translate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_methods(result) -> None:
+    """Print method names and line counts from a parse result."""
+    from tt.ts_parser import find_nodes, node_text
+    for method in find_nodes(result.root, "method_definition"):
+        name = ""
+        for c in method.children:
+            if c.type == "property_identifier":
+                name = node_text(c)
+                break
+        lines = method.end_point[0] - method.start_point[0] + 1
+        print(f"{name}()  [{lines} lines, L{method.start_point[0]+1}-{method.end_point[0]+1}]")
+
+
+def _print_node_types(result) -> None:
+    """Print frequency-sorted named node types from a parse result."""
+    from collections import Counter
+    types: Counter[str] = Counter()
+    def count(node):
+        if node.is_named:
+            types[node.type] += 1
+        for c in node.children:
+            count(c)
+    count(result.root)
+    for t, c in types.most_common(50):
+        print(f"  {t}: {c}")
+
+
 def cmd_parse(args: argparse.Namespace) -> int:
     """Parse a TypeScript file and display its structure."""
     from tt.ts_parser import parse_file, dump_tree, summary
@@ -58,34 +85,12 @@ def cmd_parse(args: argparse.Namespace) -> int:
     if args.mode == "summary":
         summary(result, file=sys.stdout)
     elif args.mode == "tree":
-        dump_tree(
-            result.root,
-            max_depth=args.depth,
-            show_unnamed=not args.named_only,
-            file=sys.stdout,
-        )
+        dump_tree(result.root, max_depth=args.depth,
+                  show_unnamed=not args.named_only, file=sys.stdout)
     elif args.mode == "methods":
-        from tt.ts_parser import find_nodes, node_text, named_children
-        for method in find_nodes(result.root, "method_definition"):
-            name = ""
-            for c in method.children:
-                if c.type == "property_identifier":
-                    name = node_text(c)
-                    break
-            lines = method.end_point[0] - method.start_point[0] + 1
-            print(f"{name}()  [{lines} lines, L{method.start_point[0]+1}-{method.end_point[0]+1}]")
+        _print_methods(result)
     elif args.mode == "node-types":
-        from collections import Counter
-        from tt.ts_parser import find_nodes
-        types: Counter[str] = Counter()
-        def count(node):
-            if node.is_named:
-                types[node.type] += 1
-            for c in node.children:
-                count(c)
-        count(result.root)
-        for t, c in types.most_common(50):
-            print(f"  {t}: {c}")
+        _print_node_types(result)
 
     return 0
 
