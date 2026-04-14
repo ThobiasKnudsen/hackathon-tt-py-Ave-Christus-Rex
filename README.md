@@ -60,10 +60,37 @@ See [COMPETITION_RULES.md](COMPETITION_RULES.md).
 
 1. Generate translator tt
 2. Run `make evaluate_tt_ghostfolio`
-3. Publish results with `make publish_results`
-4. Verify test performance and investigate possible rule breaches
-5. Inspect code manually?
+3. **MANDATORY: Log the score with a message describing what changed:**
+   ```bash
+   python helptools/log_score.py -m "Describe what changed and whether it helped or hurt"
+   ```
+4. Publish results with `make publish_results`
+5. Verify test performance and investigate possible rule breaches
 6. Iterate on translator, and go back to 2.
+
+### Score Logging (MANDATORY for all agents)
+
+Every agent **MUST** log scores after every evaluation run. This is non-negotiable.
+
+```bash
+# After running make evaluate_tt_ghostfolio:
+python helptools/log_score.py -m "Added getSymbolMetrics translation — tests up from 48 to 72"
+python helptools/log_score.py -m "Refactored arrow fn handling — broke destructuring, tests dropped to 45"
+```
+
+The message must describe:
+- **What was changed** (which function, which approach)
+- **Whether it helped or hurt** (score went up/down)
+- **Why** (if known — e.g. "broke because X was not handled")
+
+View all logged scores:
+```bash
+python helptools/view_scores.py              # all entries, best first
+python helptools/view_scores.py --last 10    # last 10 by time
+python helptools/view_scores.py --branch Thobias-2  # filter by branch
+```
+
+Scores are stored in `/home/o/Personal/Code/Knowit/scores.jsonl` (shared across all worktrees).
 
 
 ### Scaffold Setup Helper
