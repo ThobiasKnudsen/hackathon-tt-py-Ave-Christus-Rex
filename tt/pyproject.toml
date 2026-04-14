@@ -9,6 +9,8 @@ description = "Translation tool - copies implementation from ghostfolio_pytx_exa
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
+    "tree-sitter>=0.25.2",
+    "tree-sitter-typescript>=0.23.2",
     "uvicorn[standard]>=0.30",
 ]
 

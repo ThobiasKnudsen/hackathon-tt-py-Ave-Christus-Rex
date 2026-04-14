@@ -35,10 +35,29 @@ DEFAULT_OUTPUT = REPO_ROOT / "translations" / "ghostfolio_pytx"
 
 def setup_scaffold(output_dir: Path) -> None:
     """Copy the example scaffold and tt support modules into output_dir."""
-    # Step 1: Copy the example as the base (contains main.py, pyproject.toml)
+    # Step 1: Copy the example as the base (contains main.py, pyproject.toml).
+    # On Windows with uvicorn --reload running we can't rmtree .venv (file locks).
+    # Preserve .venv across runs so the fast iteration loop keeps working.
     if output_dir.exists():
-        shutil.rmtree(output_dir)
-    shutil.copytree(EXAMPLE_DIR, output_dir)
+        for entry in output_dir.iterdir():
+            if entry.name == ".venv":
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+        for src_file in EXAMPLE_DIR.rglob("*"):
+            if src_file.is_dir():
+                continue
+            rel = src_file.relative_to(EXAMPLE_DIR)
+            dst = output_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dst)
+    else:
+        shutil.copytree(EXAMPLE_DIR, output_dir)
     print(f"  Copied example scaffold → {output_dir}")
 
     # Step 2: Overlay tt scaffold support files (models, helpers, types, base classes)
