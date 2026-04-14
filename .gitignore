@@ -76,4 +76,4 @@ evaluate/scoring/results/
 **/.parcel-cache/
 **/pnpm-lock.yaml
 **/yarn.lock
-**/package-lock.json
+**/package-lock.jsonevaluate/checks/results/
