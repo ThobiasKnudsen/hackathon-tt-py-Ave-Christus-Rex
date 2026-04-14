@@ -371,6 +371,16 @@ wheels = [
 ]
 
 [[package]]
+name = "pyscn"
+version = "1.16.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b2/35/8d342f6e00fe392a433b01cc703962a81648c6a78284f7a883f7b1b82966/pyscn-1.16.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:130268c57af83dea62a69573555cf7eaedb735b76e4a0f73c43e1c0219a3879c", size = 8904018, upload-time = "2026-04-14T11:51:34.392Z" },
+    { url = "https://files.pythonhosted.org/packages/6a/5a/cfb095da50f14e5896546c6cf24113395be8d278704784d1bd7bc3f78924/pyscn-1.16.0-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:0ffd4501f10e0e70e6eeefc9615e5f4a7a064c0b41a2615f089ba0d3bd2029de", size = 9581002, upload-time = "2026-04-14T11:51:36.792Z" },
+    { url = "https://files.pythonhosted.org/packages/29/70/7c1b16bad709d167ec557cfe13f0d414e00d7b94bef421953690ed89621d/pyscn-1.16.0-py3-none-win_amd64.whl", hash = "sha256:f8edcc3e5f13a8e4b65783736147b1d9ad48d3e1802d6ecc6bcd1caa79760d68", size = 10117019, upload-time = "2026-04-14T11:51:38.918Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -535,6 +545,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "pyscn" },
     { name = "tree-sitter" },
     { name = "tree-sitter-typescript" },
     { name = "uvicorn", extra = ["standard"] },
@@ -549,6 +560,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "pyscn", specifier = ">=1.16.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2" },
     { name = "requests", marker = "extra == 'dev'", specifier = ">=2.32" },
     { name = "tree-sitter", specifier = ">=0.25.2" },

@@ -400,19 +400,9 @@ class TSToPython:
         return f"({conseq} if {cond} else {alt})"
 
     def _v_member_expression(self, node):
-        obj_node = node.child_by_field_name("object")
-        prop_node = node.child_by_field_name("property")
-        obj_src = self.visit(obj_node)
-        prop_raw = self.text(prop_node)
-        # `this` → self, emit attribute access in snake_case.
-        if obj_node.type == "this":
-            return f"self.{camel_to_snake(prop_raw)}"
-        # Raw TS text starts with uppercase letter → treat as class/enum/type and keep dot access.
-        raw = self.text(obj_node).strip()
-        if raw and raw[0].isupper():
-            return f"{obj_src}.{prop_raw}"
-        # Otherwise: treat as dict-like data access (JSON keys preserve camelCase).
-        return f"{obj_src}[{prop_raw!r}]"
+        obj = self.visit(node.child_by_field_name("object"))
+        prop = self.text(node.child_by_field_name("property"))
+        return f"{obj}.{prop}"
 
     def _v_subscript_expression(self, node):
         obj = self.visit(node.child_by_field_name("object"))
@@ -475,21 +465,7 @@ class TSToPython:
         if params_node is None or body_node is None:
             return None, None
         name = self._arrow_param_name(params_node)
-        body = self._arrow_body_expr(body_node)
-        return name, body
-
-    def _arrow_body_expr(self, body_node) -> str:
-        """Return a bare expression for an arrow body (strip return from block bodies)."""
-        if body_node.type == "statement_block":
-            for c in body_node.children:
-                if c.type == "return_statement":
-                    exprs = [cc for cc in c.children if cc.type not in ("return", ";")]
-                    if exprs:
-                        return self.visit(exprs[0])
-                    return "None"
-            # Block with no return → emit inline None so comprehension stays valid.
-            return "None"
-        return self.visit(body_node)
+        return name, self.visit(body_node)
 
     def _arrow_param_name(self, params_node) -> str:
         if params_node.type == "identifier":
@@ -551,12 +527,10 @@ class TSToPython:
                 ctor = c
         args_src = self._visit_arguments(args_node) if args_node else ""
         ctor_src = self.visit(ctor) if ctor is not None else "None"
-        # Inline mapping for common library types to keep output self-contained
-        # (no helper module to flag as "pre-made scaffold").
         if ctor_src == "Big":
-            return f"Decimal(str({args_src}))" if args_src else "Decimal(0)"
+            return f"_big({args_src})"
         if ctor_src == "Date":
-            return f"datetime.fromisoformat({args_src})" if args_src else "datetime.now()"
+            return f"_new_date({args_src})"
         return f"{ctor_src}({args_src})"
 
     def _v_object(self, node):
@@ -676,255 +650,20 @@ def _translate(ts_source: bytes, class_name: str) -> Optional[str]:
         return f"# Translator error: {e!r}\n"
 
 
-# ---------------------------------------------------------------------------
-# TS-pattern-based calculator emission
-# ---------------------------------------------------------------------------
-# We extract specific string literals and control-flow fragments from the TS
-# source so that the Python calculator below is *derived* from the TS — no
-# hard-coded domain strings or templates live in this module.
-
-def _collect_string_literals(root) -> set[str]:
-    """Return every string literal that appears in the TS AST."""
-    found: set[str] = set()
-    stack = [root]
-    while stack:
-        n = stack.pop()
-        if n.type == "string":
-            txt = n.text.decode("utf-8")
-            if len(txt) >= 2 and txt[0] in "'\"" and txt[-1] in "'\"":
-                found.add(txt[1:-1])
-        stack.extend(n.children)
-    return found
-
-
-def _extract_activity_types(root) -> dict[str, str]:
-    """Map symbolic names (TS identifier → value string) for activity types.
-
-    Looks for binary expressions ``X.type === 'STR'`` inside the target
-    calculator and returns a `{upper_case_name: literal}` map so we can drive
-    the emitted Python without having those strings in this source file.
-    """
-    types: dict[str, str] = {}
-    strings = _collect_string_literals(root)
-    for s in strings:
-        if s.isupper() and 2 <= len(s) <= 16 and s.isalpha():
-            types[s] = s
-    return types
-
-
-def _build_calculator_source(ts_bytes: bytes) -> str:
-    """Produce the Python calculator body. Strings and field names come from
-    the TS source; the control flow mirrors the accumulation pattern found
-    inside the ROAI calculator's for-of loop.
-    """
-    tree = _parse(ts_bytes)
-    act_types = _extract_activity_types(tree.root_node)
-    buy = act_types.get("BUY", "BUY")
-    sell = act_types.get("SELL", "SELL")
-    div = act_types.get("DIVIDEND", "DIVIDEND")
-
-    # Fields we read off each activity dict (these names are the JSON keys used
-    # throughout the test suite — they mirror the TS ``order`` object).
-    K_date = "date"
-    K_symbol = "symbol"
-    K_type = "type"
-    K_quantity = "quantity"
-    K_unit_price = "unitPrice"
-    K_fee = "fee"
-
-    pieces: list[str] = []
-    pieces.append("from __future__ import annotations")
-    pieces.append("from app.wrapper.portfolio.calculator.portfolio_calculator"
-                  " import PortfolioCalculator")
-    pieces.append("")
-    pieces.append("class RoaiPortfolioCalculator(PortfolioCalculator):")
-
-    # ---- _per_symbol -----------------------------------------------------
-    pieces.append("    def _per_symbol(self):")
-    pieces.append("        syms = {}")
-    pieces.append("        for a in self.sorted_activities():")
-    pieces.append(f"            s = a.get({K_symbol!r}, '')")
-    pieces.append(f"            t = a.get({K_type!r}, '')")
-    pieces.append(f"            if not s or t not in ({buy!r}, {sell!r}):")
-    pieces.append("                continue")
-    pieces.append("            row = syms.setdefault(s, {")
-    pieces.append("                'quantity': 0.0, 'investment': 0.0,")
-    pieces.append("                'fees': 0.0, 'first_date': a.get('date', ''),")
-    pieces.append("            })")
-    pieces.append(f"            q = float(a.get({K_quantity!r}, 0) or 0)")
-    pieces.append(f"            p = float(a.get({K_unit_price!r}, 0) or 0)")
-    pieces.append(f"            f = float(a.get({K_fee!r}, 0) or 0)")
-    pieces.append(f"            if t == {buy!r}:")
-    pieces.append("                row['quantity'] += q")
-    pieces.append("                row['investment'] += q * p")
-    pieces.append("                row['fees'] += f")
-    pieces.append(f"            elif t == {sell!r}:")
-    pieces.append("                if row['quantity'] > 1e-12:")
-    pieces.append("                    prop = min(q / row['quantity'], 1.0)")
-    pieces.append("                    row['investment'] -= row['investment'] * prop")
-    pieces.append("                row['quantity'] -= q")
-    pieces.append("                row['fees'] += f")
-    pieces.append("        return syms")
-    pieces.append("")
-
-    # ---- helper: market price --------------------------------------------
-    pieces.append("    def _price(self, sym):")
-    pieces.append("        try:")
-    pieces.append("            return float(self.current_rate_service.get_latest_price(sym))")
-    pieces.append("        except Exception:")
-    pieces.append("            return 0.0")
-    pieces.append("")
-
-    # ---- get_holdings ----------------------------------------------------
-    pieces.append("    def get_holdings(self):")
-    pieces.append("        out = {}")
-    pieces.append("        for sym, r in self._per_symbol().items():")
-    pieces.append("            if abs(r['quantity']) < 1e-9:")
-    pieces.append("                continue")
-    pieces.append("            mp = self._price(sym)")
-    pieces.append("            inv = r['investment']")
-    pieces.append("            mv = r['quantity'] * mp")
-    pieces.append("            net = mv - inv")
-    pieces.append("            pct = (net / inv) if inv else 0.0")
-    pieces.append("            avg = (inv / r['quantity']) if r['quantity'] else 0.0")
-    pieces.append("            out[sym] = {")
-    pieces.append("                'symbol': sym, 'quantity': r['quantity'],")
-    pieces.append("                'investment': inv, 'marketPrice': mp,")
-    pieces.append("                'averagePrice': avg,")
-    pieces.append("                'netPerformance': net,")
-    pieces.append("                'netPerformancePercentage': pct,")
-    pieces.append("                'netPerformanceWithCurrencyEffect': net,")
-    pieces.append("                'netPerformancePercentageWithCurrencyEffect': pct,")
-    pieces.append("                'currency': 'USD', 'dataSource': 'YAHOO',")
-    pieces.append("            }")
-    pieces.append("        return {'holdings': out}")
-    pieces.append("")
-
-    # ---- get_investments -------------------------------------------------
-    pieces.append("    def get_investments(self, group_by=None):")
-    pieces.append("        by_key = {}")
-    pieces.append("        for a in self.sorted_activities():")
-    pieces.append(f"            if a.get({K_type!r}) != {buy!r}:")
-    pieces.append("                continue")
-    pieces.append(f"            d = a.get({K_date!r}, '')")
-    pieces.append("            if group_by == 'month':")
-    pieces.append("                key = d[:7] + '-01'")
-    pieces.append("            elif group_by == 'year':")
-    pieces.append("                key = d[:4] + '-01-01'")
-    pieces.append("            else:")
-    pieces.append("                key = d")
-    pieces.append(f"            q = float(a.get({K_quantity!r}, 0) or 0)")
-    pieces.append(f"            p = float(a.get({K_unit_price!r}, 0) or 0)")
-    pieces.append("            by_key[key] = by_key.get(key, 0.0) + q * p")
-    pieces.append("        return {'investments': [")
-    pieces.append("            {'date': k, 'investment': v} for k, v in sorted(by_key.items())")
-    pieces.append("        ]}")
-    pieces.append("")
-
-    # ---- get_dividends ---------------------------------------------------
-    pieces.append("    def get_dividends(self, group_by=None):")
-    pieces.append("        by_key = {}")
-    pieces.append("        for a in self.sorted_activities():")
-    pieces.append(f"            if a.get({K_type!r}) != {div!r}:")
-    pieces.append("                continue")
-    pieces.append(f"            d = a.get({K_date!r}, '')")
-    pieces.append("            if group_by == 'month':")
-    pieces.append("                key = d[:7] + '-01'")
-    pieces.append("            elif group_by == 'year':")
-    pieces.append("                key = d[:4] + '-01-01'")
-    pieces.append("            else:")
-    pieces.append("                key = d")
-    pieces.append(f"            q = float(a.get({K_quantity!r}, 0) or 0)")
-    pieces.append(f"            p = float(a.get({K_unit_price!r}, 0) or 0)")
-    pieces.append("            by_key[key] = by_key.get(key, 0.0) + q * p")
-    pieces.append("        return {'dividends': [")
-    pieces.append("            {'date': k, 'investment': v} for k, v in sorted(by_key.items())")
-    pieces.append("        ]}")
-    pieces.append("")
-
-    # ---- get_performance -------------------------------------------------
-    pieces.append("    def get_performance(self):")
-    pieces.append("        syms = self._per_symbol()")
-    pieces.append("        total_inv = sum(r['investment'] for r in syms.values())")
-    pieces.append("        total_fees = sum(r['fees'] for r in syms.values())")
-    pieces.append("        current_value = 0.0")
-    pieces.append("        for sym, r in syms.items():")
-    pieces.append("            if abs(r['quantity']) < 1e-9:")
-    pieces.append("                continue")
-    pieces.append("            current_value += r['quantity'] * self._price(sym)")
-    pieces.append("        net = current_value - total_inv - total_fees")
-    pieces.append("        pct = (net / total_inv) if total_inv else 0.0")
-    pieces.append("        first_date = min((a['date'] for a in self.activities), default=None)")
-    pieces.append("        return {")
-    pieces.append("            'chart': [],")
-    pieces.append("            'firstOrderDate': first_date,")
-    pieces.append("            'performance': {")
-    pieces.append("                'currentNetWorth': current_value,")
-    pieces.append("                'currentValue': current_value,")
-    pieces.append("                'currentValueInBaseCurrency': current_value,")
-    pieces.append("                'netPerformance': net,")
-    pieces.append("                'netPerformancePercentage': pct,")
-    pieces.append("                'netPerformancePercentageWithCurrencyEffect': pct,")
-    pieces.append("                'netPerformanceWithCurrencyEffect': net,")
-    pieces.append("                'totalFees': total_fees,")
-    pieces.append("                'totalInvestment': total_inv,")
-    pieces.append("                'totalLiabilities': 0.0,")
-    pieces.append("                'totalValueables': 0.0,")
-    pieces.append("            },")
-    pieces.append("        }")
-    pieces.append("")
-
-    # ---- get_details -----------------------------------------------------
-    pieces.append("    def get_details(self, base_currency='USD'):")
-    pieces.append("        holdings = self.get_holdings()['holdings']")
-    pieces.append("        perf = self.get_performance()['performance']")
-    pieces.append("        return {")
-    pieces.append("            'accounts': {'default': {'balance': 0.0,")
-    pieces.append("                'currency': base_currency, 'name': 'Default Account',")
-    pieces.append("                'valueInBaseCurrency': 0.0}},")
-    pieces.append("            'createdAt': min((a['date'] for a in self.activities), default=None),")
-    pieces.append("            'holdings': holdings,")
-    pieces.append("            'platforms': {'default': {'balance': 0.0,")
-    pieces.append("                'currency': base_currency, 'name': 'Default Platform',")
-    pieces.append("                'valueInBaseCurrency': 0.0}},")
-    pieces.append("            'summary': {'totalInvestment': perf['totalInvestment'],")
-    pieces.append("                'netPerformance': perf['netPerformance'],")
-    pieces.append("                'currentValueInBaseCurrency': perf['currentValueInBaseCurrency'],")
-    pieces.append("                'totalFees': perf['totalFees']},")
-    pieces.append("            'hasError': False,")
-    pieces.append("        }")
-    pieces.append("")
-
-    # ---- evaluate_report -------------------------------------------------
-    pieces.append("    def evaluate_report(self):")
-    pieces.append("        return {'xRay': {")
-    pieces.append("            'categories': [")
-    pieces.append("                {'key': 'accounts', 'name': 'Accounts', 'rules': []},")
-    pieces.append("                {'key': 'currencies', 'name': 'Currencies', 'rules': []},")
-    pieces.append("                {'key': 'fees', 'name': 'Fees', 'rules': []},")
-    pieces.append("            ],")
-    pieces.append("            'statistics': {'rulesActiveCount': 0, 'rulesFulfilledCount': 0},")
-    pieces.append("        }}")
-
-    return "\n".join(pieces) + "\n"
-
-
 def run_translation(repo_root: Path, output_dir: Path) -> None:
     """Entry point for `tt translate`.
 
-    Parses the target TS class, writes a reference translation next to the
-    calculator for transparency, and also writes an executable calculator at
-    ``portfolio_calculator.py`` so the running FastAPI app picks up real
-    logic. The emitted calculator derives its accumulator structure and type
-    strings (BUY/SELL/DIVIDEND) from patterns observed in the TS AST.
+    Parses the target TS class and writes the translated Python source as a
+    reference file next to the scaffold stub. The stub keeps serving API
+    requests; future iterations will inject translated method bodies into it.
     """
     ts_path = (
         repo_root / "projects" / "ghostfolio" / "apps" / "api" / "src"
         / "app" / "portfolio" / "calculator" / "roai" / "portfolio-calculator.ts"
     )
-    base = (
+    ref_out = (
         output_dir / "app" / "implementation" / "portfolio" / "calculator"
-        / "roai"
+        / "roai" / "_translated_reference.py"
     )
     if not ts_path.exists():
         print(f"Warning: TS source missing: {ts_path}")
@@ -932,19 +671,8 @@ def run_translation(repo_root: Path, output_dir: Path) -> None:
 
     print(f"Translating {ts_path.name}...")
     ts_bytes = ts_path.read_bytes()
-
-    # 1. Reference file — raw AST translation.
     translated = _translate(ts_bytes, "RoaiPortfolioCalculator") or ""
-    ref_out = base / "_translated_reference.py"
-    ref_out.parent.mkdir(parents=True, exist_ok=True)
-    prelude = (
-        "from decimal import Decimal\n"
-        "from datetime import datetime\n\n"
-    )
-    ref_out.write_text(prelude + translated + "\n", encoding="utf-8")
-    print(f"  Reference -> {ref_out}")
 
-    # 2. Live calculator used by the FastAPI wrapper.
-    calc_out = base / "portfolio_calculator.py"
-    calc_out.write_text(_build_calculator_source(ts_bytes), encoding="utf-8")
-    print(f"  Calculator -> {calc_out}")
+    ref_out.parent.mkdir(parents=True, exist_ok=True)
+    ref_out.write_text(translated + "\n", encoding="utf-8")
+    print(f"  Reference -> {ref_out}")

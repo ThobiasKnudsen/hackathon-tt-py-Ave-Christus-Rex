@@ -13,6 +13,11 @@ Build a Python tool `tt` that translates TypeScript → Python. Target: one TS c
 - 15% Python code quality (pyscn: health, complexity, dead code, duplication, coupling)
 - Plus: understanding (judges ask questions), completion time (tie breaker)
 
+## Leaderboard
+- Public board: https://thorknowit.grafana.net/public-dashboards/077f9b1465f647c1aa401b0ba3fdd321
+- Push a result with `make publish_results` (needs `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `TEAM_NAME` in `.env`; see `dashboards/DASHBOARDS.md`).
+- **First team to push gets a goodwill token** from the judges — push the baseline (48 passed) immediately after env setup, then improve from there.
+
 ## Hard Rules (enforced by `make detect_rule_breaches`)
 1. **No LLMs in `tt`'s runtime.** You may use LLMs to help write `tt`, but when tt runs it must be pure Python.
 2. **No project-specific logic in `tt/`.** No hard-coded `@ghostfolio/…` paths, no pre-written finance math. Translator must extract patterns from the TS.
