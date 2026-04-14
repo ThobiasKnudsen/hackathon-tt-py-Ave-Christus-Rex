@@ -108,11 +108,14 @@ publish_results:
 		echo "or add TEAM_NAME=YourTeamName to your .env file."; \
 		exit 1; \
 	fi
-	@VALID=$$(python3 -c "import json,sys; d=json.load(open('evaluate/scoring/results/publish_latest.json')); sys.exit(0 if d.get('valid_checks') else 1)" 2>/dev/null); \
-	if [ $$? -ne 0 ]; then \
-		echo "BLOCKED: valid_checks is false — rule breaches detected. Fix them before publishing."; \
-		exit 1; \
-	fi
+	@python3 -c "\
+import json, sys; \
+d = json.load(open('evaluate/scoring/results/publish_latest.json')); \
+if not d.get('valid_checks'): \
+    print('BLOCKED: valid_checks is false — rule breaches detected.'); sys.exit(1); \
+if d.get('tests_pct', 0) <= 28: \
+    print(f'BLOCKED: tests_pct={d[\"tests_pct\"]} — translator is not doing real work yet (stub baseline is ~27%). Improve the translator first.'); sys.exit(1); \
+" 2>/dev/null || exit 1
 	uv run --project tt python evaluate/scoring/publish_scores.py --project ghostfolio
 
 # Run all implementation-rule detection scripts against tt/ source.
