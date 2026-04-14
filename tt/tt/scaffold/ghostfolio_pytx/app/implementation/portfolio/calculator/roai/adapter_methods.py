@@ -12,6 +12,8 @@ generated class. It is NOT imported at runtime.
 
 # --- begin adapter methods ---
 
+    ENABLE_LOGGING = False
+
     def _normalize_activity(self, act):
         """Wrap a flat activity dict so translated TS code can access it."""
         if isinstance(act, JSObj):
@@ -102,12 +104,13 @@ generated class. It is NOT imported at runtime.
         return symbols
 
     def _compute_exchange_rates(self, start_date, end_date):
-        """Build {date: 1.0} exchange rate map (single currency assumption).
+        """Build {date: Decimal(1)} exchange rate map (single currency).
 
-        Uses defaultdict so any date lookup returns 1.0 (no currency conversion).
+        Uses defaultdict so any date lookup returns Decimal(1) (no conversion).
+        Returns Decimal to avoid Decimal * float TypeError.
         """
         from collections import defaultdict
-        return defaultdict(lambda: 1.0)
+        return defaultdict(lambda: Decimal("1"))
 
     def get_performance(self):
         self._ensure_normalized()

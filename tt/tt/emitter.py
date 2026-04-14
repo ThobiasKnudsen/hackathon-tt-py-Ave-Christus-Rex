@@ -1034,6 +1034,8 @@ class Emitter:
         "Number.NEGATIVE_INFINITY": "float('-inf')",
         "Math.PI": "math.pi",
         "Math.E": "math.e",
+        # PortfolioCalculator statics → self reference (base class is immutable)
+        "PortfolioCalculator.ENABLE_LOGGING": "self.ENABLE_LOGGING",
     }
 
     def _emit_member_expression(self, node: Node) -> str:
