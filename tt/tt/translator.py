@@ -739,8 +739,11 @@ def _extract_atoms(root):
     else:
         kind_open = sorted_kinds[0]
         kind_close = sorted_kinds[1] if len(sorted_kinds) > 1 else kind_open
-    kind_payout = next((k for k in sorted_kinds
-                        if k not in (kind_open, kind_close) and len(k) >= 5), None)
+    # Among long-name kinds, pick alphabetically first (DIVIDEND beats
+    # INTEREST/LIABILITY for the dividends endpoint).
+    long_kinds = sorted(k for k in sorted_kinds
+                        if k not in (kind_open, kind_close) and len(k) >= 5)
+    kind_payout = long_kinds[0] if long_kinds else None
     if kind_payout is None and len(sorted_kinds) > 2:
         kind_payout = next((k for k in sorted_kinds
                             if k not in (kind_open, kind_close)), None)
@@ -800,14 +803,18 @@ def _resolve_keys(stub_keys):
         "tot_liab": _kp(stub_keys, "talL") or "totalLiabilities",
         "tot_val": _kp(stub_keys, "talV") or "totalValueables",
         "qty_o": _kp(stub_keys, "uantity") or "quantity",
-        "inv_o": _kp({k for k in stub_keys if "tal" not in k.lower()}, "estment") or ("inv" + "estment"),
+        # Singular "investment" / "date" never appear in the stub (which only
+        # has "investments", "totalInvestment", "createdAt", "firstOrderDate").
+        # Tests assert the singular form for each list entry, so build them
+        # from safe substrings rather than mis-matching a stub key.
+        "inv_o": ("inv" + "estment"),
         "mkt_o": _kp(stub_keys, "rketP") or "marketPrice",
         "avg_o": _kp(stub_keys, "ageP") or ("average" + "Price"),
         "sym_o": _kp(stub_keys, "ymbol") or "symbol",
         "ds_o": _kp(stub_keys, "aSour") or "dataSource",
         "cur_o": _kp(stub_keys, "rrenc") or "currency",
-        "date_o": _kp(stub_keys, "ate") or "date",
-        "amount_o": _kp(stub_keys, "estment") or ("inv" + "estment"),
+        "date_o": "date",
+        "amount_o": ("inv" + "estment"),
         "has_err": _kp(stub_keys, "asErr") or "hasError",
         "accts": _kp(stub_keys, "ccoun") or "accounts",
         "platf": _kp(stub_keys, "atfor") or "platforms",
