@@ -60,7 +60,7 @@ _REPLACE_RULES = [
         r"from date_fns import.*",
         "from .runtime_helpers import (\n"
         "    add_milliseconds, difference_in_days, each_year_of_interval,\n"
-        "    format_date, is_before, is_this_year, parse_date, JSObj,\n"
+        "    format_date, is_before, is_this_year, parse_date, JSObj, js_truthy,\n"
         ")",
     ),
     # Portfolio order item interface → strip

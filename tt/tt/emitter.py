@@ -258,6 +258,33 @@ class Emitter:
         child = self._field(node, name)
         return node_text(child) if child else ""
 
+    # -- JS truthiness --
+
+    _SIMPLE_COND_TYPES = frozenset({
+        "identifier", "member_expression", "subscript_expression",
+        "call_expression",
+    })
+
+    def _is_simple_condition(self, node: Node | None) -> bool:
+        """True if node is a simple expression that needs js_truthy wrapping.
+
+        Binary expressions (==, &&, ||), unary ! and boolean literals already
+        produce correct Python truthiness and don't need wrapping.
+        """
+        if node is None:
+            return False
+        # Unwrap parenthesized_expression
+        if node.type == "parenthesized_expression":
+            inner = named_children(node)
+            return self._is_simple_condition(inner[0]) if inner else False
+        return node.type in self._SIMPLE_COND_TYPES
+
+    def _wrap_condition(self, cond_str: str, cond_node: Node | None) -> str:
+        """Wrap a condition string with js_truthy() if the node is simple."""
+        if self._is_simple_condition(cond_node):
+            return f"js_truthy({cond_str})"
+        return cond_str
+
     # ======================================================================
     # Node handlers — one per tree-sitter node type
     # ======================================================================
@@ -625,6 +652,13 @@ class Emitter:
         # Strip outer parens if present
         if cond.startswith("(") and cond.endswith(")"):
             cond = cond[1:-1]
+        # Unwrap parenthesized_expression for the node check
+        inner_cond = cond_node
+        if inner_cond and inner_cond.type == "parenthesized_expression":
+            nc = named_children(inner_cond)
+            if nc:
+                inner_cond = nc[0]
+        cond = self._wrap_condition(cond, inner_cond)
 
         header = self._line(f"if {cond}:", node)
 
@@ -663,6 +697,12 @@ class Emitter:
         cond = self._node(cond_node) if cond_node else "True"
         if cond.startswith("(") and cond.endswith(")"):
             cond = cond[1:-1]
+        inner_cond = cond_node
+        if inner_cond and inner_cond.type == "parenthesized_expression":
+            nc = named_children(inner_cond)
+            if nc:
+                inner_cond = nc[0]
+        cond = self._wrap_condition(cond, inner_cond)
 
         parts = [self._line(f"elif {cond}:", else_node)]
         if cons_node:
@@ -704,11 +744,27 @@ class Emitter:
 
         if body_node:
             self._indent += 1
-            body = self._emit_statement_block_inner(body_node)
-            # Append update at end of loop body
             if update_node:
-                upd = self._node(update_node)
-                body += "\n" + self._line(upd, update_node)
+                upd_text = self._node(update_node)
+                # Check for 'continue' in the body to decide wrapping
+                # Emit body at +1 indent (inside try block) if wrapping
+                raw_body = self._emit_statement_block_inner(body_node)
+                if "continue" in raw_body:
+                    # Re-emit body at one deeper indent for try block
+                    self._indent += 1
+                    body_inner = self._emit_statement_block_inner(body_node)
+                    self._indent -= 1
+                    body = self._line("try:") + "\n"
+                    body += body_inner + "\n"
+                    body += self._line("finally:") + "\n"
+                    self._indent += 1
+                    body += self._line(upd_text)
+                    self._indent -= 1
+                else:
+                    body = raw_body
+                    body += "\n" + self._line(upd_text, update_node)
+            else:
+                body = self._emit_statement_block_inner(body_node)
             self._indent -= 1
             parts.append(body)
         else:
@@ -908,8 +964,8 @@ class Emitter:
         if func_text == "format":
             args = self._emit_args_list(args_node)
             if len(args) >= 2:
-                return f"{args[0]}.strftime({args[1]})"
-            return f"str({args[0]})" if args else "str(None)"
+                return f"format_date({args[0]}, {args[1]})"
+            return f"format_date({args[0]})" if args else "str(None)"
 
         if func_text == "isBefore":
             args = self._emit_args_list(args_node)
@@ -931,11 +987,11 @@ class Emitter:
 
         if func_text == "eachYearOfInterval":
             args = self._emit_args_list(args_node)
-            return f"_each_year_of_interval({', '.join(args)})" if args else "[]"
+            return f"each_year_of_interval({', '.join(args)})" if args else "[]"
 
         if func_text == "getIntervalFromDateRange":
             args = self._emit_args_list(args_node)
-            return f"_get_interval_from_date_range({', '.join(args)})"
+            return f"get_interval_from_date_range({', '.join(args)})"
 
         return None
 
@@ -1109,7 +1165,9 @@ class Emitter:
 
         # instanceof → isinstance(left, right)
         if op == "instanceof":
-            return f"isinstance({left}, {right})"
+            # Big → Decimal
+            cls = "Decimal" if right == "Big" else right
+            return f"isinstance({left}, {cls})"
 
         # Map TS operators to Python
         py_op = _BINOP_MAP.get(op, op)
@@ -1131,6 +1189,8 @@ class Emitter:
         val = self._node(operand)
 
         if op == "!":
+            if self._is_simple_condition(operand):
+                return f"not js_truthy({val})"
             return f"not {val}"
         if op == "typeof":
             return f"type({val}).__name__"
@@ -1142,6 +1202,7 @@ class Emitter:
         alt_node = self._field(node, "alternative")
 
         cond = self._node(cond_node) if cond_node else "True"
+        cond = self._wrap_condition(cond, cond_node)
         cons = self._node(cons_node) if cons_node else "None"
         alt = self._node(alt_node) if alt_node else "None"
 

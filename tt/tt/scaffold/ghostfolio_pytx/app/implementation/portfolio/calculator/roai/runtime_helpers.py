@@ -25,21 +25,45 @@ DATE_FORMAT = "%Y-%m-%d"
 # ---------------------------------------------------------------------------
 
 
+def _snake_to_camel(name: str) -> str:
+    """Convert snake_case to camelCase."""
+    parts = name.split("_")
+    return parts[0] + "".join(p.capitalize() for p in parts[1:])
+
+
+def _camel_to_snake(name: str) -> str:
+    """Convert camelCase to snake_case."""
+    import re as _re
+    s = _re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    return _re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s).lower()
+
+
 class JSObj(dict):
     """Dict subclass that supports attribute access (like JS objects).
 
     Missing keys return None instead of raising KeyError, matching
-    JavaScript's undefined behavior.
+    JavaScript's undefined behavior. Transparently bridges camelCase
+    and snake_case so that both ``obj.unitPrice`` and ``obj.unit_price``
+    resolve to the same stored key.
     """
 
+    def _resolve(self, key):
+        """Find the actual dict key, trying camelCase and snake_case variants."""
+        if key in self:
+            return key
+        alt = _snake_to_camel(key) if "_" in key else _camel_to_snake(key)
+        if alt in self:
+            return alt
+        return key  # not found — fall through to default (None)
+
     def __getattr__(self, key):
-        return self.get(key)  # returns None for missing
+        return self.get(self._resolve(key))
 
     def __setattr__(self, key, value):
-        self[key] = value
+        self[self._resolve(key)] = value
 
     def __delattr__(self, key):
-        self.pop(key, None)
+        self.pop(self._resolve(key), None)
 
     def __missing__(self, key):
         return None  # JS returns undefined for missing keys
@@ -55,6 +79,20 @@ class JSObj(dict):
 def nvl(val, default):
     """Nullish coalescing: return default only if val is None."""
     return default if val is None else val
+
+
+def js_truthy(val):
+    """JS truthiness: Decimal/object values are truthy (like Big.js), None is falsy.
+
+    In JS, Big(0) is an object and therefore truthy. In Python, Decimal('0')
+    is falsy.  This helper bridges the gap so that ``if js_truthy(x)``
+    behaves like ``if (x)`` in TypeScript.
+    """
+    if val is None:
+        return False
+    if isinstance(val, Decimal):
+        return True  # Big.js objects are always truthy in JS
+    return bool(val)
 
 
 # ---------------------------------------------------------------------------
@@ -99,13 +137,30 @@ def parse_date(s) -> datetime:
     return datetime.now()
 
 
+_JS_TO_STRFTIME = {
+    "yyyy": "%Y", "yy": "%y",
+    "MM": "%m", "dd": "%d",
+    "HH": "%H", "mm": "%M", "ss": "%S",
+}
+
+
+def _convert_js_format(fmt: str) -> str:
+    """Convert a date-fns format string to Python strftime format."""
+    if "%" in fmt:
+        return fmt  # already Python
+    result = fmt
+    for js, py in _JS_TO_STRFTIME.items():
+        result = result.replace(js, py)
+    return result
+
+
 def format_date(dt, fmt=DATE_FORMAT) -> str:
     """Format a datetime to string."""
     if isinstance(dt, str):
         return dt
     if dt is None:
         return ""
-    return dt.strftime(fmt)
+    return dt.strftime(_convert_js_format(fmt))
 
 
 def difference_in_days(a, b) -> int:
