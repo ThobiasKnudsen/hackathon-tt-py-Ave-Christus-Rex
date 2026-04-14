@@ -1,11 +1,8 @@
 """
-Minimal translation tool implementation.
+Translation tool CLI.
 
-This implementation sets up the scaffold and copies the implementation code
-from translations/ghostfolio_pytx_example/ to provide a complete working
-translation without any actual TypeScript-to-Python conversion logic.
-
-This allows the translated version to pass all tests that the example passes.
+Sets up the scaffold, then runs the tree-sitter based TypeScript-to-Python
+translator to produce the Ghostfolio implementation.
 """
 from __future__ import annotations
 
@@ -69,7 +66,7 @@ def cmd_parse(args: argparse.Namespace) -> int:
             file=sys.stdout,
         )
     elif args.mode == "methods":
-        from tt.ts_parser import find_nodes, node_text, named_children
+        from tt.ts_parser import find_nodes, node_text
         for method in find_nodes(result.root, "method_definition"):
             name = ""
             for c in method.children:

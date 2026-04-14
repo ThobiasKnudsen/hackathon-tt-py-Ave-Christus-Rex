@@ -54,22 +54,6 @@ def convert_name(name: str) -> str:
 # Known function/method mappings (generic, not domain-specific)
 # ---------------------------------------------------------------------------
 
-# Big.js method → Python Decimal operator/method
-_BIG_METHOD_MAP = {
-    "plus": "__add__",
-    "minus": "__sub__",
-    "mul": "__mul__",
-    "div": "__div__",
-    "eq": "__eq__",
-    "gt": "__gt__",
-    "lt": "__lt__",
-    "gte": "__ge__",
-    "lte": "__le__",
-    "toFixed": "_to_fixed",
-    "toNumber": "_to_number",
-    "abs": "__abs__",
-}
-
 # Big.js methods that map to binary operators
 _BIG_OPERATOR_MAP = {
     "plus": "+",
@@ -94,7 +78,7 @@ _BINOP_MAP = {
     "!==": "!=",
     "&&": "and",
     "||": "or",
-    "??": "or",  # nullish coalescing → or (close enough for most cases)
+    # "??" handled specially in _emit_binary_expression
     "instanceof": "isinstance",  # handled specially
 }
 
@@ -283,10 +267,7 @@ class Emitter:
         for child in node.children:
             if not child.is_named:
                 continue
-            if child.type == "comment":
-                parts.append(self._node(child))
-            else:
-                parts.append(self._node(child))
+            parts.append(self._node(child))
         return "\n\n".join(parts) + "\n"
 
     # -- imports --
@@ -882,7 +863,7 @@ class Emitter:
 
     def _try_method_call_simple(self, obj_node: Node | None, args_node: Node | None,
                                 method: str) -> str | None:
-        """Handle simple method translations (includes, push, at)."""
+        """Handle simple method translations (includes, push, at, getTime)."""
         obj = self._node(obj_node) if obj_node else "?"
         args = self._emit_args_list(args_node)
 
@@ -892,6 +873,15 @@ class Emitter:
             return f"{obj}.append({', '.join(args)})"
         if method == "at":
             return f"{obj}[{args[0]}]" if args else None
+        # Date methods
+        if method == "getTime":
+            return f"{obj}.timestamp()"
+        if method == "getFullYear":
+            return f"{obj}.year"
+        if method == "getMonth":
+            return f"({obj}.month - 1)"  # JS months are 0-indexed
+        if method == "getDate":
+            return f"{obj}.day"
         return None
 
     def _try_global_call(self, func_node: Node, args_node: Node | None,
@@ -1060,9 +1050,9 @@ class Emitter:
 
         obj = self._node(obj_node) if obj_node else "?"
 
-        # .length → len(obj)
+        # .length → len(obj or []) to handle None (JS returns undefined.length = undefined)
         if prop == "length":
-            return f"len({obj})"
+            return f"len({obj} or [])"
 
         # Handle optional chaining (already separate node type, but just in case)
         optional = child_by_type(node, "optional_chain")
@@ -1102,13 +1092,25 @@ class Emitter:
         right = self._node(right_node) if right_node else "?"
         op = self._get_text(op_node) if op_node else "?"
 
-        # Map TS operators to Python
-        py_op = _BINOP_MAP.get(op, op)
+        # ?? (nullish coalescing) → safe fallback
+        # NOT `or` — Decimal(0) is falsy in Python but truthy in JS
+        if op == "??":
+            # obj[key] ?? default → obj.get(key, default)
+            if left_node and left_node.type == "subscript_expression":
+                obj_n = self._field(left_node, "object")
+                idx_n = self._field(left_node, "index")
+                obj_s = self._node(obj_n) if obj_n else "?"
+                idx_s = self._node(idx_n) if idx_n else "?"
+                return f"{obj_s}.get({idx_s}, {right})"
+            # obj?.prop ?? default → getattr(obj, 'prop', default)
+            return f"({left} if {left} is not None else {right})"
 
         # instanceof → isinstance(left, right)
         if op == "instanceof":
             return f"isinstance({left}, {right})"
 
+        # Map TS operators to Python
+        py_op = _BINOP_MAP.get(op, op)
         return f"({left} {py_op} {right})"
 
     def _emit_unary_expression(self, node: Node) -> str:
@@ -1278,12 +1280,12 @@ class Emitter:
                     val = self._node(inner[0])
                     pairs.append(f"**{val}")
         if not pairs:
-            return "{}"
+            return "JSObj({})"
         if len(pairs) <= 3:
-            return "{" + ", ".join(pairs) + "}"
+            return "JSObj({" + ", ".join(pairs) + "})"
         # Multi-line dict
         inner = ",\n".join(self._indent_str() + "    " + p for p in pairs)
-        return "{\n" + inner + ",\n" + self._indent_str() + "}"
+        return "JSObj({\n" + inner + ",\n" + self._indent_str() + "})"
 
     def _emit_pair(self, node: Node) -> str:
         key_node = self._field(node, "key")
@@ -1525,5 +1527,9 @@ class Emitter:
         obj = self._node(obj_node) if obj_node else "[]"
         args = self._emit_args_list(args_node) if args_node else []
         if args:
-            return f"for _x in {obj}: {args[0]}(_x)"
-        return f"pass  # forEach"
+            header = self._line(f"for _x in {obj}:")
+            self._indent += 1
+            body = self._line(f"{args[0]}(_x)")
+            self._indent -= 1
+            return f"{header}\n{body}"
+        return self._line("pass  # forEach")
